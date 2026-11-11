@@ -1,0 +1,39 @@
+[project]
+name = "climate-power"
+version = "0.1.0"
+description = "Weather-driven electricity price forecasting"
+readme = "README.md"
+authors = [
+    { name = "Oscar Sallusti", email = "oscarllusti@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "holidays>=0.108",
+    "matplotlib>=3.11.2",
+    "numpy>=2.5.4",
+    "pandas>=3.1.1",
+    "pyarrow>=26.0.1",
+    "pyyaml>=6.0.3",
+    "requests>=2.34.2",
+    "scikit-learn>=1.9.1",
+    "torch>=2.15.0",
+]
+
+[project.scripts]
+climate-power = "climate_power.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.12.24,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+    "ruff>=0.17.4",
+]
+
+[tool.ruff]
+line-length = 120
+
+[tool.pytest.ini_options]
+filterwarnings = ["ignore::DeprecationWarning"]

@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[oc]
+build/
+dist/
+*.egg-info
+.venv
+.pytest_cache/
+.ruff_cache/
+
+# Data and trained models are rebuilt by the CLI, never committed
+data/
+models/
+!src/climate_power/models/
+
+# Editor / OS
+.idea/
+.DS_Store

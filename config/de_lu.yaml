@@ -1,0 +1,42 @@
+# Germany-Luxembourg day-ahead market, weather from Open-Meteo.
+market: de_lu
+timezone: Europe/Berlin
+holidays_country: DE
+
+prices:
+  source: energy_charts      # api.energy-charts.info (Fraunhofer ISE / SMARD), no key
+  bidding_zone: DE-LU
+  start: "2018-10-01"        # first day of the DE-LU zone
+
+weather:
+  variables: [temperature_2m, wind_speed_100m, shortwave_radiation, precipitation]
+  actual_start: "2018-10-01"
+  forecast_model: gfs_seamless          # 16-day horizon, used for archive and live
+  forecast_archive_start: "2024-04-01"  # 100 m wind forecasts are archived from spring 2024
+  # Each location feeds the feature groups it is listed under:
+  #   wind  -> wind capacity-factor proxy, solar -> irradiance, load -> temperature
+  locations:
+    north_sea_offshore: {lat: 54.40, lon: 6.90,  groups: [wind]}
+    nordfriesland:      {lat: 54.60, lon: 8.90,  groups: [wind]}
+    ostfriesland:       {lat: 53.40, lon: 7.50,  groups: [wind]}
+    mecklenburg:        {lat: 53.90, lon: 12.30, groups: [wind]}
+    uckermark:          {lat: 53.20, lon: 13.90, groups: [wind]}
+    sachsen_anhalt:     {lat: 52.00, lon: 11.50, groups: [wind]}
+    franken:            {lat: 49.60, lon: 10.60, groups: [solar]}
+    lausitz:            {lat: 51.60, lon: 14.00, groups: [solar]}
+    munich:             {lat: 48.14, lon: 11.58, groups: [solar, load]}
+    stuttgart:          {lat: 48.78, lon: 9.18,  groups: [solar, load]}
+    frankfurt:          {lat: 50.11, lon: 8.68,  groups: [solar, load]}
+    berlin:             {lat: 52.52, lon: 13.40, groups: [load]}
+    hamburg:            {lat: 53.55, lon: 10.00, groups: [load]}
+    cologne:            {lat: 50.94, lon: 6.96,  groups: [load]}
+
+model:
+  history_hours: 168         # encoder window (7 days)
+  horizon_hours: 336         # 14 days ahead
+  max_forecast_lead_days: 6  # target days beyond this fall back to climatology
+  climatology_end: "2025-10-31"   # climatology and scalers use data up to here only
+
+split:                       # by forecast origin; a 14-day embargo separates the sets
+  val_start: "2025-11-15"
+  test_start: "2026-03-01"
