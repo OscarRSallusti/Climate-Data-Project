@@ -9,7 +9,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="climate-power", description=__doc__)
     parser.add_argument("--config", default="config/de_lu.yaml")
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("fetch", help="download / refresh prices, weather history and archived forecasts")
+    sub.add_parser("fetch", help="download / refresh prices, grid data, weather history and archived forecasts")
     sub.add_parser("snapshot", help="save the current 16-day weather forecast")
     p = sub.add_parser("backtest", help="train all models and evaluate them on the test period")
     p.add_argument("--skip-lstm", action="store_true")
@@ -18,10 +18,14 @@ def main() -> None:
     cfg = load_config(args.config)
 
     if args.command == "fetch":
-        from . import prices, weather
+        from . import grid, prices, weather
 
         s = prices.update_prices(cfg)
         print(f"prices: {len(s):,} hours, {s.index[0]} -> {s.index[-1]}")
+        g = grid.update_generation(cfg)
+        print(f"generation and load: {g.shape}, {g.index[0]} -> {g.index[-1]}")
+        c = grid.update_capacity(cfg)
+        print(f"installed capacity: {c.shape}, {c.index[0].date()} -> {c.index[-1].date()}")
         a = weather.update_actual(cfg)
         print(f"weather actual: {a.shape}, -> {a.index[-1]}")
         f = weather.update_forecast_archive(cfg)

@@ -14,9 +14,9 @@ price over 2026 was about 120.
 
 | Model | All 14 days | Days 1-6 | Days 7-14 | vs naive |
 |---|---|---|---|---|
-| GBM + observed weather (upper bound) | 22.0 | 22.1 | 22.0 | 0.50 |
-| **LSTM + weather forecast** | 30.6 | 27.0 | 33.3 | 0.70 |
-| **GBM + weather forecast** | 31.8 | 29.4 | 33.6 | 0.72 |
+| GBM + observed weather (upper bound) | 21.9 | 21.9 | 22.0 | 0.50 |
+| **LSTM + weather forecast** | 30.7 | 27.1 | 33.4 | 0.70 |
+| **GBM + weather forecast** | 31.2 | 28.4 | 33.2 | 0.71 |
 | GBM, calendar and price history only | 34.6 | 34.0 | 35.1 | 0.79 |
 | 7-day hourly profile | 40.5 | 40.2 | 40.7 | 0.92 |
 | Same hour last week | 43.9 | 45.5 | 42.7 | 1.00 |
@@ -41,10 +41,16 @@ revision, picked without looking at the outcome):
 
 | What | Source | Coverage |
 |---|---|---|
-| Day-ahead prices | [energy-charts.info](https://api.energy-charts.info) (Fraunhofer ISE, from SMARD) | hourly from Oct 2018; 15-minute prices since Oct 2025 are averaged to hourly |
-| Observed weather | [Open-Meteo](https://open-meteo.com) archive API (reanalysis) | hourly from Oct 2018 |
+| Day-ahead prices | [energy-charts.info](https://api.energy-charts.info) (Fraunhofer ISE, from SMARD) | hourly from Jan 2015 (joint zone with Austria until Sep 2018); 15-minute prices since Oct 2025 are averaged to hourly |
+| Generation by source, load | energy-charts.info | hourly from Jan 2015 |
+| Installed wind, solar, battery capacity | energy-charts.info | monthly from 2002 |
+| Observed weather | [Open-Meteo](https://open-meteo.com) archive API (reanalysis) | hourly from Jan 2015 (available back to the 1940s) |
 | Past weather forecasts | Open-Meteo previous-runs API, GFS | what the model predicted 1-7 days before each hour, from Apr 2024 |
 | Live weather forecast | Open-Meteo forecast API, GFS | 16 days ahead; every download is kept as a snapshot |
+
+The models currently train on April 2024 onward, because that is where the
+archive of past weather forecasts starts. Generation, load and capacity are
+collected but not yet used by the models.
 
 Weather is pulled at 14 points and reduced to four national drivers: a wind
 capacity-factor proxy (100 m wind through a generic turbine power curve, six
@@ -109,6 +115,11 @@ Data and trained models are written to `data/` and `models/` and are not committ
 ## Ideas for next steps
 
 - Bring back the Fourier representative-day model as a baseline and as features.
-- Predict wind, solar and load first, then price from residual load.
+- Predict wind, solar and load first, then price from residual load. This stage
+  needs only observed weather, so it can train on the full history from 2015 with
+  installed capacity as an input.
+- Real 16-day forecast history from NOAA GEFS (reforecasts 2000-2019 and
+  operational runs from 2017 on AWS), to train lead-specific models before 2024
+  and to cover days 7-14.
 - Quantile outputs for prediction intervals.
 - Use an ensemble weather forecast so the model sees forecast uncertainty.

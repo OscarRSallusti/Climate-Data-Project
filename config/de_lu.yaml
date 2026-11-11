@@ -5,12 +5,17 @@ holidays_country: DE
 
 prices:
   source: energy_charts      # api.energy-charts.info (Fraunhofer ISE / SMARD), no key
-  bidding_zone: DE-LU
-  start: "2018-10-01"        # first day of the DE-LU zone
+  zones:                     # stitched in order; Austria left the German zone in Oct 2018
+    - {zone: DE-AT-LU, start: "2015-01-01", end: "2018-09-30"}
+    - {zone: DE-LU, start: "2018-10-01"}
+
+grid:                        # generation by source, load, installed capacity
+  country: de
+  start: "2015-01-01"
 
 weather:
   variables: [temperature_2m, wind_speed_100m, shortwave_radiation, precipitation]
-  actual_start: "2018-10-01"
+  actual_start: "2015-01-01"
   forecast_model: gfs_seamless          # 16-day horizon, used for archive and live
   forecast_archive_start: "2024-04-01"  # 100 m wind forecasts are archived from spring 2024
   # Each location feeds the feature groups it is listed under:
