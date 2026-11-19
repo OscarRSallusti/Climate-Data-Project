@@ -54,9 +54,11 @@ def mae_by_lead(table: pd.DataFrame, unit: str, path, max_lead: int) -> None:
     fig, ax = plt.subplots(figsize=(9, 5))
     for name in table.columns:
         ax.plot(table.index, table[name], color=COLORS[name], lw=2, marker="o", ms=4, label=LABELS[name])
-    ax.axvline(max_lead + 0.5, color=MUTED, lw=1, ls=":")
-    ax.set_ylim(bottom=ax.get_ylim()[0] - 2.5)
-    ax.text(max_lead + 0.6, ax.get_ylim()[0] + 0.3, "climatology replaces weather forecasts", va="bottom", color=MUTED, fontsize=9)
+    if max_lead < table.index.max():  # some target days have no real weather forecast
+        ax.axvline(max_lead + 0.5, color=MUTED, lw=1, ls=":")
+        ax.set_ylim(bottom=ax.get_ylim()[0] - 2.5)
+        ax.text(max_lead + 0.6, ax.get_ylim()[0] + 0.3, "climatology replaces weather forecasts", va="bottom", color=MUTED,
+                fontsize=9)
     ax.set_xticks(table.index)
     ax.set_xlabel("Days ahead")
     ax.set_ylabel(f"Mean absolute error ({unit})")

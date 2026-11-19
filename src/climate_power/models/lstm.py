@@ -32,8 +32,12 @@ class Seq2Seq(nn.Module):
         return self.head(torch.cat([out, dec], dim=-1)).squeeze(-1) + dec[..., DEC_PROFILE]
 
 
-def _tensors(s: Samples):
-    return torch.from_numpy(s.enc), torch.from_numpy(s.dec), torch.from_numpy(s.y.astype("float32"))
+def _device() -> torch.device:
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def _tensors(s: Samples, device: torch.device):
+    return tuple(torch.from_numpy(np.ascontiguousarray(x)).to(device) for x in (s.enc, s.dec, s.y.astype("float32")))
 
 
 class LSTMForecaster:
@@ -45,9 +49,10 @@ class LSTMForecaster:
 
     def _fit_one(self, seed: int, train: Samples, val: Samples) -> Seq2Seq:
         torch.manual_seed(seed)
-        enc, dec, y = _tensors(train)
-        v_enc, v_dec, v_y = _tensors(val)
-        net = Seq2Seq(enc.shape[-1], dec.shape[-1], self.hidden)
+        device = _device()
+        enc, dec, y = _tensors(train, device)
+        v_enc, v_dec, v_y = _tensors(val, device)
+        net = Seq2Seq(enc.shape[-1], dec.shape[-1], self.hidden).to(device)
         opt = torch.optim.AdamW(net.parameters(), lr=2e-3, weight_decay=1e-3)
         sched = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, factor=0.5, patience=4)
         loss_fn = nn.L1Loss()
@@ -55,7 +60,7 @@ class LSTMForecaster:
         gen = torch.Generator().manual_seed(seed)
         for epoch in range(self.epochs):
             net.train()
-            for batch in torch.randperm(len(enc), generator=gen).split(32):
+            for batch in torch.randperm(len(enc), generator=gen).to(device).split(32):
                 opt.zero_grad()
                 loss = loss_fn(net(enc[batch], dec[batch]), y[batch])
                 loss.backward()
@@ -71,12 +76,14 @@ class LSTMForecaster:
                 stale += 1
                 if stale >= self.patience:
                     break
-        print(f"  lstm seed {seed}: best val MAE {best:.3f} (normalised) after {epoch + 1} epochs", flush=True)
+        if best_state is None:
+            raise RuntimeError(f"lstm seed {seed}: validation loss was never finite")
+        print(f"  lstm seed {seed} ({device.type}): best val MAE {best:.3f} (normalised) after {epoch + 1} epochs",
+              flush=True)
         net.load_state_dict(best_state)
-        return net.eval()
+        return net.cpu().eval()  # saved models stay loadable without a GPU
 
     def fit(self, train: Samples, val: Samples) -> LSTMForecaster:
-        torch.set_num_threads(max(1, torch.get_num_threads()))
         self.nets = [self._fit_one(seed, train, val) for seed in self.seeds]
         return self
 

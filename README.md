@@ -45,12 +45,24 @@ revision, picked without looking at the outcome):
 | Generation by source, load | energy-charts.info | hourly from Jan 2015 |
 | Installed wind, solar, battery capacity | energy-charts.info | monthly from 2002 |
 | Observed weather | [Open-Meteo](https://open-meteo.com) archive API (reanalysis) | hourly from Jan 2015 (available back to the 1940s) |
-| Past weather forecasts | Open-Meteo previous-runs API, GFS | what the model predicted 1-7 days before each hour, from Apr 2024 |
-| Live weather forecast | Open-Meteo forecast API, GFS | 16 days ahead; every download is kept as a snapshot |
+| Past and live weather forecasts (default) | [NOAA GEFS via dynamical.org](https://dynamical.org/catalog/noaa-gefs-forecast-35-day/) (Icechunk/Zarr on AWS Open Data, CC BY 4.0) | one 31-member ensemble run per day (00 UTC) from Oct 2020, 16 days ahead |
+| Past weather forecasts (alternative) | Open-Meteo previous-runs API, GFS | what the model predicted 1-7 days before each hour, from Apr 2024 |
+| Live weather forecast (alternative) | Open-Meteo forecast API, GFS | 16 days ahead; every download is kept as a snapshot |
 
-The models currently train on April 2024 onward, because that is where the
-archive of past weather forecasts starts. Generation, load and capacity are
-collected but not yet used by the models.
+**Forecast source.** `weather.forecast_source` in the config (or `--source`)
+picks where weather forecasts come from:
+
+- `gefs` (default): the NOAA GEFS ensemble. The store is read point by point, so
+  only the chunks around the 14 locations are downloaded (about 40 MB and 20 s per
+  daily run; the full archive from Oct 2020 takes around 13 hours on a 2 MB/s
+  connection and under 1 GB on disk). Each run is reduced to the four national
+  drivers per member, then to the ensemble mean (the model input) and spread
+  (stored for later use). Runs reach 16 days, so every target day sees a real
+  forecast, and training can start in October 2020.
+- `open_meteo`: the previous-runs archive, from April 2024 and only up to 7 days
+  ahead, so target days 7-14 fall back to climatology.
+
+Generation, load and capacity are collected but not yet used by the models.
 
 Weather is pulled at 14 points and reduced to four national drivers: a wind
 capacity-factor proxy (100 m wind through a generic turbine power curve, six
@@ -60,9 +72,10 @@ load centres, and precipitation.
 **Forecast setup.** A forecast is made on the morning of day D, before the noon
 auction. It knows prices through day D, observed weather through D-1, and weather
 forecasts issued by the end of D-1. It predicts the 336 hourly prices of days
-D+1 to D+14. For target day k the model sees the forecast issued k+1 days before,
-so nothing in the backtest uses information that was not available at the time
-(`tests/test_features.py` checks this).
+D+1 to D+14. For target day k the model sees the forecast issued k+1 days before;
+with GEFS that is the 00 UTC run of day D-1 for every target day. Nothing in the
+backtest uses information that was not available at the time
+(`tests/test_features.py` and `tests/test_gefs.py` check this).
 
 **Models.**
 
@@ -84,24 +97,44 @@ Requires [uv](https://docs.astral.sh/uv/).
 
 ```bash
 uv sync
-uv run climate-power fetch      # download or refresh all data (first run: about 10 minutes)
+uv run climate-power fetch      # download or refresh all data (first run: ~10 min, plus ~13 h for the GEFS archive)
 uv run climate-power backtest   # train, evaluate, write reports/de_lu/
 uv run climate-power forecast   # live 14-day forecast from the latest data
-uv run climate-power snapshot   # just archive the current 16-day weather forecast
 uv run pytest
 ```
 
+The GEFS download can be interrupted and resumed: every finished run is stored
+under `data/de_lu/gefs/raw/`, and the next `fetch` only gets what is missing.
+
+Comparison runs: `--source open_meteo` switches the forecast source,
+`--train-start YYYY-MM-DD` shortens the training window, and `--tag NAME` writes
+models and reports to `models/de_lu/NAME/` and `reports/de_lu/NAME/` so they do
+not overwrite the main run. For example:
+
+```bash
+uv run climate-power --source open_meteo fetch
+uv run climate-power --source open_meteo --tag open_meteo backtest
+uv run climate-power --source open_meteo snapshot   # archive the current Open-Meteo 16-day forecast
+```
+
+The LSTM trains on a CUDA GPU when PyTorch can see one, otherwise on the CPU.
 Data and trained models are written to `data/` and `models/` and are not committed.
 
 ## Known limitations
 
-- **No archived weather forecasts beyond 7 days.** Open-Meteo keeps past forecasts
-  only up to a 7-day lead, so target days 7-14 use climatology in training,
-  backtest and live runs. Real 16-day forecasts are being collected by `snapshot`
-  and `forecast`; run one of them daily and this gap closes over time. The
-  alternative is NOAA's GEFS reforecast archive (large GRIB files).
-- **Conservative lead.** Using the forecast issued k+1 days before is up to a day
-  staler than what is really available on the morning of day D.
+- **Forecast history starts in October 2020.** Prices and observed weather go
+  back to 2015, but the GEFS store starts with the current model version (GEFSv12)
+  in October 2020. The same model version was re-run for 2000-2019 (the GEFSv12
+  reforecast, 5 members), but only as global GRIB files on AWS, about 300 MB per
+  day for the variables used here. With the Open-Meteo source, forecasts start in
+  April 2024 and stop at 7 days ahead.
+- **Conservative lead.** Using the run of day D-1 is up to a day staler than what
+  is really available on the morning of day D (the 00 UTC run of day D is
+  published by about 06 UTC).
+- **Grid points, not interpolation.** GEFS values are taken at the nearest grid
+  point (0.25 degrees; 100 m wind comes from the 0.5 degree grid), while observed
+  weather comes from Open-Meteo's reanalysis. The models learn the mapping, but
+  forecast and observation are not exactly the same quantity.
 - **Single train/test split.** No rolling re-training yet, and the live command
   uses the models from the backtest rather than ones refitted on all data.
 - **Point forecasts only.** No prediction intervals, and price spikes are
@@ -118,8 +151,10 @@ Data and trained models are written to `data/` and `models/` and are not committ
 - Predict wind, solar and load first, then price from residual load. This stage
   needs only observed weather, so it can train on the full history from 2015 with
   installed capacity as an input.
-- Real 16-day forecast history from NOAA GEFS (reforecasts 2000-2019 and
-  operational runs from 2017 on AWS), to train lead-specific models before 2024
-  and to cover days 7-14.
+- Extend the forecast history to 2015 with the GEFSv12 reforecast (same model
+  version as the operational archive), reading only the needed GRIB messages via
+  their `.idx` byte ranges.
 - Quantile outputs for prediction intervals.
-- Use an ensemble weather forecast so the model sees forecast uncertainty.
+- Feed the ensemble spread (already stored as `*_sd` columns in
+  `data/de_lu/gefs/features.parquet`) to the models, so they see forecast
+  uncertainty.

@@ -19,6 +19,7 @@ import time
 import pandas as pd
 
 from .config import Config
+from .features import weather_features
 from .http import get_json
 
 ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
@@ -117,11 +118,11 @@ def update_forecast_archive(cfg: Config) -> pd.DataFrame:
             hourly,
             start_date=f"{a:%Y-%m-%d}",
             end_date=f"{b:%Y-%m-%d}",
-            models=cfg.raw["weather"]["forecast_model"],
+            models=cfg.raw["weather"]["open_meteo"]["model"],
         )
         return _to_frame(cfg, payload, rename)
 
-    return _update(cfg, "forecast", cfg.raw["weather"]["forecast_archive_start"], "MS", fetch)
+    return _update(cfg, "forecast", cfg.raw["weather"]["open_meteo"]["archive_start"], "MS", fetch)
 
 
 def fetch_live_forecast(cfg: Config, past_days: int = 3, save_snapshot: bool = True) -> pd.DataFrame:
@@ -132,7 +133,7 @@ def fetch_live_forecast(cfg: Config, past_days: int = 3, save_snapshot: bool = T
         cfg.variables,
         forecast_days=16,
         past_days=past_days,
-        models=cfg.raw["weather"]["forecast_model"],
+        models=cfg.raw["weather"]["open_meteo"]["model"],
     )
     df = _to_frame(cfg, payload)
     if save_snapshot:
@@ -149,3 +150,8 @@ def load_actual(cfg: Config) -> pd.DataFrame:
 
 def load_forecast_archive(cfg: Config) -> pd.DataFrame:
     return pd.read_parquet(cfg.data_dir / "weather_forecast.parquet")
+
+
+def forecast_frames(cfg: Config, wide: pd.DataFrame) -> dict[int, pd.DataFrame]:
+    """National drivers of the forecast issued N days before each hour, N = 1..max_lead + 1."""
+    return {n: weather_features(cfg, wide, lead=n) for n in range(1, cfg.max_lead + 2)}

@@ -12,15 +12,15 @@ def test_power_curve():
     assert 0 < power_curve([8])[0] < 1
 
 
-@pytest.fixture
-def setup():
-    cfg = load_config()
+@pytest.fixture(params=["gefs", "open_meteo"])
+def setup(request):
+    cfg = load_config().with_overrides(source=request.param)
     rng = np.random.default_rng(0)
     index = pd.date_range("2025-01-01", periods=24 * 80, freq="h", tz="UTC")
     T, F = len(index), len(WX)
     local = index.tz_convert(cfg.timezone)
     # forecast[n] is filled with the constant n so its use is traceable
-    forecast = np.stack([np.full((T, F), n, dtype="float32") for n in range(8)])
+    forecast = np.stack([np.full((T, F), n, dtype="float32") for n in range(cfg.max_lead + 2)])
     m = Master(
         index=index,
         price=rng.normal(80, 30, T),
@@ -62,3 +62,12 @@ def test_inputs_do_not_depend_on_the_future(setup):
 def test_origins_are_local_midnight(setup):
     cfg, m, pos = setup
     assert (m.index[pos].tz_convert(cfg.timezone).hour == 0).all()
+
+
+def test_max_lead_follows_source():
+    cfg = load_config()
+    assert cfg.with_overrides(source="gefs").max_lead == 14
+    assert cfg.with_overrides(source="open_meteo").max_lead == 6
+    gefs = cfg.with_overrides(source="gefs")
+    assert gefs.train_start == pd.Timestamp("2020-10-04", tz="UTC")
+    assert gefs.with_overrides(train_start="2024-04-03").train_start == pd.Timestamp("2024-04-03", tz="UTC")

@@ -9,7 +9,7 @@ import pandas as pd
 from . import plots
 from .backtest import UNIT
 from .config import Config
-from .features import build_master, build_samples, usable
+from .features import build_master, build_samples, usable, weather_features
 from .prices import update_prices
 from .weather import fetch_live_forecast, update_actual
 
@@ -18,11 +18,26 @@ def run_forecast(cfg: Config) -> pd.DataFrame:
     path = cfg.model_dir / "models.joblib"
     if not path.exists():
         raise SystemExit("No trained models found. Run `climate-power backtest` first.")
-    models = joblib.load(path)
+    saved = joblib.load(path)
+    if "models" not in saved:  # saved before forecast sources existed
+        saved = {"source": "open_meteo", "max_lead": 6, "models": saved}
+    if saved["source"] != cfg.source or saved["max_lead"] != cfg.max_lead:
+        raise SystemExit(
+            f"The saved models were trained with forecast source {saved['source']!r}, "
+            f"but the active source is {cfg.source!r}. Run `climate-power backtest` first."
+        )
+    models = saved["models"]
 
     price = update_prices(cfg)
     actual = update_actual(cfg)
-    live = fetch_live_forecast(cfg)  # also stored as a snapshot
+    if cfg.source == "gefs":
+        from . import gefs
+
+        gefs.update_archive(cfg)
+        feats = gefs.update_features(cfg)
+        forecast, live = gefs.lead_frames(feats, cfg.max_lead + 1), gefs.latest_frame(feats)
+    else:
+        forecast, live = None, weather_features(cfg, fetch_live_forecast(cfg))  # also stored as a snapshot
 
     # Origin = first hour after the last local day with a complete set of prices.
     local = price.index.tz_convert(cfg.timezone)
@@ -30,7 +45,7 @@ def run_forecast(cfg: Config) -> pd.DataFrame:
     origin = (last_day + pd.Timedelta(days=1)).tz_convert("UTC")
     end = origin + pd.Timedelta(hours=cfg.horizon - 1)
 
-    master = build_master(cfg, price, actual, None, live_wide=live, end=end)
+    master = build_master(cfg, price, actual, forecast, live=live, end=end)
     pos = np.array([master.index.get_loc(origin)])
     s = build_samples(master, cfg, pos, "asavail")
     if not usable(s)[0]:
@@ -56,7 +71,7 @@ def run_forecast(cfg: Config) -> pd.DataFrame:
         UNIT,
         f"Live 14-day forecast from {local_times[0]:%d %b %Y}",
         cfg.report_dir / "latest_forecast.png",
-        split=local_times[cfg.max_lead * 24],
+        split=local_times[cfg.max_lead * 24] if cfg.max_lead * 24 < cfg.horizon else None,
     )
     daily = out.drop(columns="days_ahead").groupby(out["days_ahead"]).mean().round(1)
     daily.insert(0, "date", [d.date() for d in local_times[::24]])

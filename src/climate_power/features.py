@@ -13,8 +13,10 @@ The targets are the 336 hourly prices of days D+1 .. D+14. "Origin" is the first
 target hour (local midnight starting D+1).
 
 Weather the model may see for target day k (1..14) is the forecast issued k+1
-days before the hour, which Open-Meteo archives for lead <= 7 days. So days
-1..6 use real archived forecasts and days 7..14 fall back to climatology. The
+days before the hour: with daily runs, every target day of one forecast comes
+from the run of day D-1. How many target days get a real forecast depends on
+the source (`Config.max_lead`): GEFS runs reach 16 days, so all 14 do; the
+Open-Meteo archive stops at 7 days, so days 7..14 fall back to climatology. The
 "oracle" mode swaps in observed weather everywhere, as an upper bound.
 """
 
@@ -39,21 +41,36 @@ def power_curve(ws):
     return np.where(ws >= 25.0, 0.0, cf)
 
 
+def national_drivers(cfg: Config, ws100, sw, temp, precip) -> np.ndarray:
+    """Per-location arrays (location on the last axis, config order) -> the WX drivers on a new last axis.
+
+    Missing values propagate, so an hour is only defined when every location is.
+    """
+    def idx(group: str) -> list[int]:
+        return [i for i, loc in enumerate(cfg.locations) if group in loc.groups]
+
+    return np.stack(
+        [
+            power_curve(ws100[..., idx("wind")]).mean(axis=-1),
+            np.asarray(sw)[..., idx("solar")].mean(axis=-1),
+            np.asarray(temp)[..., idx("load")].mean(axis=-1),
+            np.asarray(precip).mean(axis=-1),
+        ],
+        axis=-1,
+    )
+
+
 def weather_features(cfg: Config, wide: pd.DataFrame, lead: int | None = None) -> pd.DataFrame:
-    """Collapse per-location variables into four national drivers."""
+    """Collapse per-location variables (Open-Meteo layout) into four national drivers."""
     suffix = "" if lead is None else f"|{lead}"
 
-    def cols(group: str | None, var: str) -> pd.DataFrame:
-        names = cfg.group(group) if group else [loc.name for loc in cfg.locations]
-        return wide[[f"{n}|{var}{suffix}" for n in names]]
+    def var(name: str) -> np.ndarray:
+        return wide[[f"{loc.name}|{name}{suffix}" for loc in cfg.locations]].to_numpy("float64")
 
-    wind = cols("wind", "wind_speed_100m")
-    out = pd.DataFrame(index=wide.index)
-    out["wind_cf"] = pd.DataFrame(power_curve(wind), index=wide.index).mean(axis=1, skipna=False)
-    out["solar"] = cols("solar", "shortwave_radiation").mean(axis=1, skipna=False)
-    out["temp"] = cols("load", "temperature_2m").mean(axis=1, skipna=False)
-    out["precip"] = cols(None, "precipitation").mean(axis=1, skipna=False)
-    return out[WX]
+    drivers = national_drivers(
+        cfg, var("wind_speed_100m"), var("shortwave_radiation"), var("temperature_2m"), var("precipitation")
+    )
+    return pd.DataFrame(drivers, index=wide.index, columns=WX)
 
 
 def climatology(feats: pd.DataFrame, end: str, index: pd.DatetimeIndex) -> pd.DataFrame:
@@ -78,7 +95,7 @@ class Master:
     index: pd.DatetimeIndex
     price: np.ndarray  # [T]
     actual: np.ndarray  # [T, F] observed weather features, standardised
-    forecast: np.ndarray  # [8, T, F] forecast[N] = issued N days before; index 0 unused
+    forecast: np.ndarray  # [max_lead + 2, T, F] forecast[N] = issued N days before; index 0 unused
     clim: np.ndarray  # [T, F]
     hour: np.ndarray  # local hour of day
     dow: np.ndarray  # local day of week, Monday = 0
@@ -92,19 +109,21 @@ def build_master(
     cfg: Config,
     price: pd.Series,
     actual_wide: pd.DataFrame,
-    forecast_wide: pd.DataFrame | None,
-    live_wide: pd.DataFrame | None = None,
+    forecast: dict[int, pd.DataFrame] | None,
+    live: pd.DataFrame | None = None,
     end: pd.Timestamp | None = None,
 ) -> Master:
     """Assemble the aligned arrays.
 
-    Backtest: pass `forecast_wide` (the previous-runs archive).
-    Live: pass `live_wide` (the current forecast); it stands in for every lead and
-    fills the hours observations do not cover yet.
+    forecast: {N: WX frame} for N = 1 .. max_lead + 1, the forecast issued N days
+        before each hour (see `weather.forecast_frames` and `gefs.lead_frames`).
+    live: WX frame with the newest forecast for every hour. It fills the recent
+        hours observations do not cover yet. If `forecast` is None it also stands
+        in for every lead (Open-Meteo live mode, where no lead history exists).
     """
     actual = weather_features(cfg, actual_wide)
-    start = pd.Timestamp(cfg.raw["weather"]["forecast_archive_start"], tz="UTC") - pd.Timedelta(days=45)
-    if live_wide is not None:
+    start = cfg.archive_start - pd.Timedelta(days=45)
+    if live is not None:
         start = price.index[-1] - pd.Timedelta(days=60)
     end = end or min(price.index[-1], actual.index[-1])
     index = pd.date_range(start, end, freq="h")
@@ -115,25 +134,26 @@ def build_master(
     mean, std = stats.mean().to_numpy(), stats.std().to_numpy()
 
     def z(df: pd.DataFrame) -> np.ndarray:
-        return ((df.reindex(index) - mean) / std).to_numpy(dtype="float32")
+        return ((df[WX].reindex(index) - mean) / std).to_numpy(dtype="float32")
 
     clim_z = z(clim)
-    fc = np.full((8, len(index), len(WX)), np.nan, dtype="float32")
-    if live_wide is not None:
-        live = weather_features(cfg, live_wide)
+    n_fc = cfg.max_lead + 2
+    fc = np.full((n_fc, len(index), len(WX)), np.nan, dtype="float32")
+    if live is not None:
         # Observations are final a couple of days back; after that trust the live run.
         settled = pd.Timestamp.now("UTC").floor("h") - pd.Timedelta(days=2)
         observed = actual.reindex(index)
         observed[index > settled] = np.nan
-        combined = observed.combine_first(live.reindex(index))
-        act_z = z(combined)
-        fc[:] = np.where(np.isnan(act_z), clim_z, act_z)[None]
+        act_z = z(observed.combine_first(live[WX].reindex(index)))
+        if forecast is None:
+            fc[:] = np.where(np.isnan(act_z), clim_z, act_z)[None]
     else:
         act_z = z(actual)
-        for n in range(1, 8):
-            fc[n] = z(weather_features(cfg, forecast_wide, lead=n))
+    if forecast is not None:
+        for n in range(1, n_fc):
+            fc[n] = z(forecast[n])
         # Patch archive gaps with the next-older forecast, then climatology.
-        for n in range(6, 0, -1):
+        for n in range(n_fc - 2, 0, -1):
             fc[n] = np.where(np.isnan(fc[n]), fc[n + 1], fc[n])
         fc[1:] = np.where(np.isnan(fc[1:]), clim_z[None], fc[1:])
 

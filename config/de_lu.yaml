@@ -16,8 +16,20 @@ grid:                        # generation by source, load, installed capacity
 weather:
   variables: [temperature_2m, wind_speed_100m, shortwave_radiation, precipitation]
   actual_start: "2015-01-01"
-  forecast_model: gfs_seamless          # 16-day horizon, used for archive and live
-  forecast_archive_start: "2024-04-01"  # 100 m wind forecasts are archived from spring 2024
+  # Where past and live weather forecasts come from (override with --source):
+  #   gefs       - NOAA GEFS 31-member ensemble via dynamical.org, from Oct 2020, 16 days ahead
+  #   open_meteo - Open-Meteo previous-runs archive (GFS), from Apr 2024, 7 days ahead
+  forecast_source: gefs
+  open_meteo:
+    model: gfs_seamless          # 16-day horizon, used for archive and live
+    archive_start: "2024-04-01"  # 100 m wind forecasts are archived from spring 2024
+    max_lead_days: 6             # target days beyond this fall back to climatology
+  gefs:
+    catalog: https://stac.dynamical.org/catalog.json
+    dataset: noaa-gefs-forecast-35-day
+    archive_start: "2020-10-01"  # first GEFSv12 operational run in the store
+    max_lead_days: 14            # 00 UTC runs reach 16 days, enough for every target day
+    workers: 4                   # parallel downloads
   # Each location feeds the feature groups it is listed under:
   #   wind  -> wind capacity-factor proxy, solar -> irradiance, load -> temperature
   locations:
@@ -39,9 +51,9 @@ weather:
 model:
   history_hours: 168         # encoder window (7 days)
   horizon_hours: 336         # 14 days ahead
-  max_forecast_lead_days: 6  # target days beyond this fall back to climatology
   climatology_end: "2025-10-31"   # climatology and scalers use data up to here only
 
 split:                       # by forecast origin; a 14-day embargo separates the sets
+  # train_start: "2024-04-03"  # optional; default is the start of the forecast archive (override with --train-start)
   val_start: "2025-11-15"
   test_start: "2026-03-01"

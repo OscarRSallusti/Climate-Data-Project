@@ -11,9 +11,21 @@ from .config import Config
 from .features import Samples, build_master, build_samples, complete, origin_positions
 from .models.gbm import GBM
 from .prices import load_prices
-from .weather import load_actual, load_forecast_archive
+from .weather import load_actual
 
 UNIT = "EUR/MWh"
+SHORT = 6  # summary columns split the horizon here, the same for every source so runs stay comparable
+
+
+def forecast_inputs(cfg: Config) -> dict[int, pd.DataFrame]:
+    """{N: national drivers of the forecast issued N days before each hour}, from the active source."""
+    if cfg.source == "gefs":
+        from . import gefs
+
+        return gefs.lead_frames(gefs.load_features(cfg), cfg.max_lead + 1)
+    from .weather import forecast_frames, load_forecast_archive
+
+    return forecast_frames(cfg, load_forecast_archive(cfg))
 
 
 def split_masks(cfg: Config, s: Samples) -> dict[str, np.ndarray]:
@@ -25,14 +37,15 @@ def split_masks(cfg: Config, s: Samples) -> dict[str, np.ndarray]:
     return {
         # A sample's targets reach 14 days past its origin, so each set must end
         # that long before the next one starts.
-        "train": ok & (o + horizon <= val_start),
+        "train": ok & (o >= cfg.train_start) & (o + horizon <= val_start),
         "val": ok & (o >= val_start) & (o + horizon <= test_start),
         "test": ok & (o >= test_start),
     }
 
 
 def run_backtest(cfg: Config, with_lstm: bool = True) -> pd.DataFrame:
-    master = build_master(cfg, load_prices(cfg), load_actual(cfg), load_forecast_archive(cfg))
+    print(f"forecast source: {cfg.source} (real forecasts for target days 1-{cfg.max_lead})", flush=True)
+    master = build_master(cfg, load_prices(cfg), load_actual(cfg), forecast_inputs(cfg))
     pos = origin_positions(master, cfg)
     avail = build_samples(master, cfg, pos, "asavail")
     oracle = build_samples(master, cfg, pos, "oracle")
@@ -63,7 +76,7 @@ def run_backtest(cfg: Config, with_lstm: bool = True) -> pd.DataFrame:
         preds["lstm"] = te.denorm(models["lstm"].predict(te))
 
     cfg.model_dir.mkdir(parents=True, exist_ok=True)
-    joblib.dump(models, cfg.model_dir / "models.joblib")
+    joblib.dump({"source": cfg.source, "max_lead": cfg.max_lead, "models": models}, cfg.model_dir / "models.joblib")
 
     # Scores
     # Score every lead on the same delivery days (those forecast at all 14 leads),
@@ -87,8 +100,8 @@ def run_backtest(cfg: Config, with_lstm: bool = True) -> pd.DataFrame:
     overall = pd.DataFrame(
         {
             "MAE": {name: mean(e) for name, e in err.items()},
-            f"MAE days 1-{cfg.max_lead}": {name: mean(e, slice(0, cfg.max_lead)) for name, e in err.items()},
-            f"MAE days {cfg.max_lead + 1}-{days}": {name: mean(e, slice(cfg.max_lead, days)) for name, e in err.items()},
+            f"MAE days 1-{SHORT}": {name: mean(e, slice(0, SHORT)) for name, e in err.items()},
+            f"MAE days {SHORT + 1}-{days}": {name: mean(e, slice(SHORT, days)) for name, e in err.items()},
             "RMSE": {name: np.sqrt(mean(e**2)) for name, e in err.items()},
         }
     )
@@ -120,7 +133,7 @@ def run_backtest(cfg: Config, with_lstm: bool = True) -> pd.DataFrame:
     shown = {k: preds[k][i] for k in ("gbm_weather", "lstm", "gbm_calendar") if k in preds}
     plots.forecast_plot(
         times, shown, hist, UNIT, f"14-day forecast issued for {times[0]:%d %b %Y} onward", out / "example_forecast.png",
-        split=times[cfg.max_lead * 24],
+        split=times[cfg.max_lead * 24] if cfg.max_lead < days else None,
     )
 
     pd.set_option("display.width", 200)
