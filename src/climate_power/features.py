@@ -18,6 +18,11 @@ from the run of day D-1. How many target days get a real forecast depends on
 the source (`Config.max_lead`): GEFS runs reach 16 days, so all 14 do; the
 Open-Meteo archive stops at 7 days, so days 7..14 fall back to climatology. The
 "oracle" mode swaps in observed weather everywhere, as an upper bound.
+
+With an ensemble source (GEFS) the models can also see the ensemble spread of
+the same forecast, a measure of how far to trust it. Climatology days get the
+climatological spread (the typical deviation from the seasonal normal), and the
+oracle gets zero spread.
 """
 
 from __future__ import annotations
@@ -31,6 +36,7 @@ import pandas as pd
 from .config import Config
 
 WX = ["wind_cf", "solar", "temp", "precip"]
+SPREAD = [f"{name}_sd" for name in WX]  # ensemble spread of each driver, same units
 NORM_DAYS = 28
 
 
@@ -103,6 +109,10 @@ class Master:
     dayoff: np.ndarray  # weekend or public holiday
     wx_mean: np.ndarray
     wx_std: np.ndarray
+    # Ensemble spread in the same standardised units, laid out like `forecast`, or
+    # None for a deterministic source. spread_clim [T, F] stands in where `clim` does.
+    spread: np.ndarray | None = None
+    spread_clim: np.ndarray | None = None
 
 
 def build_master(
@@ -117,6 +127,7 @@ def build_master(
 
     forecast: {N: WX frame} for N = 1 .. max_lead + 1, the forecast issued N days
         before each hour (see `weather.forecast_frames` and `gefs.lead_frames`).
+        If the frames also hold the SPREAD columns, the spread is kept as well.
     live: WX frame with the newest forecast for every hour. It fills the recent
         hours observations do not cover yet. If `forecast` is None it also stands
         in for every lead (Open-Meteo live mode, where no lead history exists).
@@ -149,13 +160,37 @@ def build_master(
             fc[:] = np.where(np.isnan(act_z), clim_z, act_z)[None]
     else:
         act_z = z(actual)
+    with_spread = forecast is not None and all(c in forecast[1].columns for c in SPREAD)
+    sd = sd_clim = None
+    if with_spread:
+        # Spread is a width, so it is scaled by the driver's spread but not shifted.
+        sd = np.full_like(fc, np.nan)
+        for n in range(1, n_fc):
+            sd[n] = (forecast[n][SPREAD].reindex(index) / std).to_numpy(dtype="float32")
+        # The spread of a climatology fill: how far observations stray from the normal,
+        # over the climatology's own history (not the master index, which is only a
+        # couple of months long for live forecasts), so nothing from the test period leaks in.
+        hist = stats[WX].dropna()
+        anomaly = (hist - climatology(actual, clim_end, hist.index)[WX]) / std
+        sd_clim_row = anomaly.std().to_numpy(dtype="float32")
+        sd_clim = np.broadcast_to(sd_clim_row, clim_z.shape).copy()
     if forecast is not None:
         for n in range(1, n_fc):
             fc[n] = z(forecast[n])
-        # Patch archive gaps with the next-older forecast, then climatology.
+        # Patch archive gaps with the next-older forecast, then climatology. The
+        # spread is patched from the same source as the mean it goes with.
+        if sd is not None:
+            sd[np.isnan(fc)] = np.nan
         for n in range(n_fc - 2, 0, -1):
-            fc[n] = np.where(np.isnan(fc[n]), fc[n + 1], fc[n])
-        fc[1:] = np.where(np.isnan(fc[1:]), clim_z[None], fc[1:])
+            gap = np.isnan(fc[n])
+            fc[n] = np.where(gap, fc[n + 1], fc[n])
+            if sd is not None:
+                sd[n] = np.where(gap, sd[n + 1], sd[n])
+        gap = np.isnan(fc[1:])
+        fc[1:] = np.where(gap, clim_z[None], fc[1:])
+        if sd is not None:
+            # A run with a mean but no spread (rare archive glitches) gets the climatological spread too.
+            sd[1:] = np.where(gap | np.isnan(sd[1:]), sd_clim[None], sd[1:])
 
     local = index.tz_convert(cfg.timezone)
     years = range(local[0].year, local[-1].year + 1)
@@ -173,6 +208,8 @@ def build_master(
         dayoff=((local.day_of_week >= 5) | is_holiday).astype("float32"),
         wx_mean=mean,
         wx_std=std,
+        spread=sd,
+        spread_clim=sd_clim,
     )
 
 
@@ -209,7 +246,7 @@ class Samples:
 
 
 DEC_PROFILE = 0  # column of `profile` in the decoder input; the LSTM predicts a residual on it
-WEATHER_TAB_PREFIXES = ("wx_", "dwx_", "day_", "is_fc")
+WEATHER_TAB_PREFIXES = ("wx_", "dwx_", "day_", "is_fc", "sd_")
 
 
 def origin_positions(m: Master, cfg: Config) -> np.ndarray:
@@ -242,16 +279,20 @@ def build_samples(m: Master, cfg: Config, pos: np.ndarray, weather: str = "asava
     wx_enc[:, -24:] = m.forecast[1][enc_idx[:, -24:]]
 
     k = np.arange(H) // 24 + 1  # target day 1..14
+    with_spread = m.spread is not None
     wx_dec = np.empty((n, H, F), dtype="float32")
+    sd_dec = np.zeros((n, H, F), dtype="float32")  # stays zero for the oracle: weather known exactly
     for day in range(1, days + 1):
         sl = slice((day - 1) * 24, day * 24)
         if weather == "oracle":
-            src = m.actual
+            src, sd_src = m.actual, None
         elif day <= cfg.max_lead:
-            src = m.forecast[day + 1]
+            src, sd_src = m.forecast[day + 1], m.spread[day + 1] if with_spread else None
         else:
-            src = m.clim
+            src, sd_src = m.clim, m.spread_clim
         wx_dec[:, sl] = src[dec_idx[:, sl]]
+        if with_spread and sd_src is not None:
+            sd_dec[:, sl] = sd_src[dec_idx[:, sl]]
     is_fc = np.broadcast_to(((k <= cfg.max_lead) | (weather == "oracle")).astype("float32"), (n, H))
 
     profile = np.tile(p_enc.reshape(n, L // 24, 24).mean(axis=1), (1, days))
@@ -273,6 +314,8 @@ def build_samples(m: Master, cfg: Config, pos: np.ndarray, weather: str = "asava
         axis=-1,
     ).astype("float32")
     dec_parts = [profile, naive, *np.moveaxis(wx_dec, -1, 0), is_fc, np.broadcast_to(k / days, (n, H))]
+    if with_spread:
+        dec_parts += list(np.moveaxis(sd_dec, -1, 0))
     dec_parts += [h_sin, h_cos, d_sin, d_cos, y_sin, y_cos, dayoff]
     dec = np.stack(dec_parts, axis=-1).astype("float32")
 
@@ -298,6 +341,12 @@ def build_samples(m: Master, cfg: Config, pos: np.ndarray, weather: str = "asava
         tab[f"dwx_{name}"] = wx_dec[..., i] - anchor[..., i]
     for name in ("wind_cf", "solar", "temp"):
         tab[f"day_{name}"] = day_mean[..., WX.index(name)]
+    if with_spread:
+        day_sd = np.repeat(sd_dec.reshape(n, days, 24, F).mean(axis=2), 24, axis=1)
+        for i, name in enumerate(WX):
+            tab[f"sd_{name}"] = sd_dec[..., i]
+        for name in ("wind_cf", "solar", "temp"):
+            tab[f"sd_day_{name}"] = day_sd[..., WX.index(name)]
     tab = pd.DataFrame({key: np.asarray(v, dtype="float32").reshape(-1) for key, v in tab.items()})
 
     return Samples(

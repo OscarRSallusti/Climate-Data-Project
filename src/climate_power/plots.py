@@ -10,6 +10,9 @@ import pandas as pd
 SURFACE, INK, MUTED, GRID = "#fcfcfb", "#0b0b0b", "#52514e", "#e4e3df"
 # Colour follows the model, wherever it appears.
 COLORS = {
+    "combined": "#0b0b0b",
+    "equal_weights": "#8a8984",
+    "ensemble": "#0b0b0b",
     "gbm_weather": "#2a78d6",
     "lstm": "#eb6834",
     "gbm_calendar": "#1baf7a",
@@ -18,6 +21,9 @@ COLORS = {
     "profile_7d": "#6250d6",
 }
 LABELS = {
+    "combined": "Combination chosen on validation",
+    "equal_weights": "Equal weights, all members",
+    "ensemble": "Average of LSTM and GBM",
     "gbm_weather": "GBM + weather forecast",
     "lstm": "LSTM + weather forecast",
     "gbm_calendar": "GBM, no weather",
@@ -49,11 +55,16 @@ plt.rcParams.update(
 )
 
 
+def color_of(name: str) -> str:
+    """Colour of a model; "run:model" names (members of a combination) take their model's colour."""
+    return COLORS.get(name) or COLORS.get(name.split(":")[-1], MUTED)
+
+
 def mae_by_lead(table: pd.DataFrame, unit: str, path, max_lead: int) -> None:
     """table: rows = target day 1..14, columns = model names."""
     fig, ax = plt.subplots(figsize=(9, 5))
     for name in table.columns:
-        ax.plot(table.index, table[name], color=COLORS[name], lw=2, marker="o", ms=4, label=LABELS[name])
+        ax.plot(table.index, table[name], color=color_of(name), lw=2, marker="o", ms=4, label=LABELS.get(name, name))
     if max_lead < table.index.max():  # some target days have no real weather forecast
         ax.axvline(max_lead + 0.5, color=MUTED, lw=1, ls=":")
         ax.set_ylim(bottom=ax.get_ylim()[0] - 2.5)
@@ -100,7 +111,7 @@ def forecast_plot(times, series: dict[str, np.ndarray], history: pd.Series, unit
     fig, ax = plt.subplots(figsize=(12, 4.5))
     ax.plot(history.index, history.to_numpy(), color=INK, lw=1.5, label="Day-ahead price")
     for name, values in series.items():
-        ax.plot(times, values, color=COLORS[name], lw=1.8, label=LABELS[name])
+        ax.plot(times, values, color=color_of(name), lw=1.8, label=LABELS.get(name, name))
     if split is not None:
         ax.axvline(split, color=MUTED, lw=1, ls=":")
         ax.text(split, ax.get_ylim()[0], " climatology from here", va="bottom", color=MUTED, fontsize=9)

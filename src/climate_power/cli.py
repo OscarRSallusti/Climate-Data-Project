@@ -15,14 +15,23 @@ def main() -> None:
     )
     parser.add_argument("--tag", help="write models and reports to a subfolder of this name, for comparison runs")
     parser.add_argument("--train-start", help="first training forecast origin, YYYY-MM-DD (default: archive start)")
+    parser.add_argument("--no-spread", action="store_true", help="do not give the models the GEFS ensemble spread")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("fetch", help="download / refresh prices, grid data, weather history and archived forecasts")
     sub.add_parser("snapshot", help="save the current 16-day Open-Meteo weather forecast")
     p = sub.add_parser("backtest", help="train all models and evaluate them on the test period")
     p.add_argument("--skip-lstm", action="store_true")
-    sub.add_parser("forecast", help="14-day price forecast from the latest data (needs a backtest run)")
+    p = sub.add_parser("forecast", help="14-day price forecast from the latest data (needs a backtest run)")
+    p.add_argument("--combined", action="store_true", help="use the combination chosen by `combine`")
+    p = sub.add_parser("combine", help="choose a weighted combination of runs on the validation period, score it")
+    p.add_argument("--runs", nargs="+", help="run tags to combine (default: combine.runs in the config)")
     args = parser.parse_args()
-    cfg = load_config(args.config).with_overrides(source=args.source, tag=args.tag, train_start=args.train_start)
+    cfg = load_config(args.config).with_overrides(
+        source=args.source,
+        tag=args.tag,
+        train_start=args.train_start,
+        spread=False if args.no_spread else None,
+    )
 
     if args.command == "fetch":
         from . import grid, prices, weather
@@ -57,6 +66,10 @@ def main() -> None:
 
         run_backtest(cfg, with_lstm=not args.skip_lstm)
     elif args.command == "forecast":
-        from .live import run_forecast
+        from .live import run_combined_forecast, run_forecast
 
-        run_forecast(cfg)
+        run_combined_forecast(cfg) if args.combined else run_forecast(cfg)
+    elif args.command == "combine":
+        from .combine import run_combine
+
+        run_combine(cfg, args.runs or list(cfg.raw["combine"]["runs"]))

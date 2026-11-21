@@ -30,7 +30,7 @@ import numpy as np
 import pandas as pd
 
 from .config import Config
-from .features import WX, national_drivers
+from .features import SPREAD, WX, national_drivers
 
 RAW_VARS = [
     "wind_u_100m",
@@ -41,7 +41,6 @@ RAW_VARS = [
 ]
 MAX_LEAD_H = 384  # 16 days, the part of the 35-day run that is kept
 HOURS = np.arange(MAX_LEAD_H + 1)  # hourly lead grid of processed runs
-SPREAD = [f"{name}_sd" for name in WX]
 
 
 # ---------------------------------------------------------------- download

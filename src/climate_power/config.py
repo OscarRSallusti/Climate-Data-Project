@@ -27,8 +27,15 @@ class Config:
     source: str  # where weather forecasts come from, one of SOURCES
     tag: str | None = None  # keeps the outputs of comparison runs apart
     train_start_override: str | None = None
+    spread_override: bool | None = None
 
-    def with_overrides(self, source: str | None = None, tag: str | None = None, train_start: str | None = None):
+    def with_overrides(
+        self,
+        source: str | None = None,
+        tag: str | None = None,
+        train_start: str | None = None,
+        spread: bool | None = None,
+    ):
         if source is not None and source not in SOURCES:
             raise ValueError(f"unknown forecast source {source!r}, expected one of {SOURCES}")
         return replace(
@@ -36,6 +43,7 @@ class Config:
             source=source or self.source,
             tag=tag or self.tag,
             train_start_override=train_start or self.train_start_override,
+            spread_override=self.spread_override if spread is None else spread,
         )
 
     @property
@@ -72,6 +80,15 @@ class Config:
     def max_lead(self) -> int:
         """Last target day that sees a real weather forecast; later days use climatology."""
         return min(int(self.source_cfg["max_lead_days"]), self.horizon // 24)
+
+    @property
+    def use_spread(self) -> bool:
+        """Feed the ensemble spread to the models. Only GEFS is an ensemble."""
+        if self.source != "gefs":
+            return False
+        if self.spread_override is not None:
+            return self.spread_override
+        return bool(self.source_cfg.get("use_spread", False))
 
     @property
     def archive_start(self) -> pd.Timestamp:

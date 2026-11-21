@@ -30,6 +30,7 @@ weather:
     archive_start: "2020-10-01"  # first GEFSv12 operational run in the store
     max_lead_days: 14            # 00 UTC runs reach 16 days, enough for every target day
     workers: 4                   # parallel downloads
+    use_spread: true             # give the models the ensemble spread as well as the mean (--no-spread turns it off)
   # Each location feeds the feature groups it is listed under:
   #   wind  -> wind capacity-factor proxy, solar -> irradiance, load -> temperature
   locations:
@@ -52,6 +53,13 @@ model:
   history_hours: 168         # encoder window (7 days)
   horizon_hours: 336         # 14 days ahead
   climatology_end: "2025-10-31"   # climatology and scalers use data up to here only
+
+combine:                     # runs whose forecasts `climate-power combine` weighs against each other
+  # Make each with `climate-power [options] --tag NAME backtest`, using the options shown.
+  runs:
+    open_meteo: "--source open_meteo"
+    gefs_spread: "--source gefs"
+    gefs_spread_from_2024: "--source gefs --train-start 2024-04-04"
 
 split:                       # by forecast origin; a 14-day embargo separates the sets
   # train_start: "2024-04-03"  # optional; default is the start of the forecast archive (override with --train-start)
